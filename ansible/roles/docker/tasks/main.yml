@@ -1,0 +1,36 @@
+- name: Instalar o Docker (se ainda não estiver instalado)
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+    lock_timeout: 600
+
+- name: Configurar o Docker (rotação de logs dos contêineres)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    docker_daemon_config:
+      log-driver: json-file
+      log-opts:
+        max-size: "10m"
+        max-file: "3"
+  notify: Reiniciar Docker
+
+- name: Garantir o Docker rodando e iniciando com a VM
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Permitir que o usuário de administração use o Docker
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"
+
+- name: Aplicar a configuração do Docker agora (se mudou)
+  ansible.builtin.meta: flush_handlers

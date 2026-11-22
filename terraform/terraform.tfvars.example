@@ -1,0 +1,8 @@
+# Exemplo para rodar local (a pipeline passa tudo por -var).
+project_id        = "pm04-kubeshop"
+environment       = "dev"
+instance_name     = "kubeshop"
+app_instance_type = "e2-small"
+db_instance_type  = "e2-small"
+ssh_public_key    = "ssh-ed25519 AAAA... pm04"
+admin_cidr        = "200.1.2.3/32"

@@ -1,0 +1,31 @@
+# Valores padrão. A pipeline (deploy.yml) sobrescreve com -e usando os
+# parâmetros do Run workflow.
+environment_name: dev
+
+# Imagens da loja: {{ docker_image }}-api e {{ docker_image }}-frontend
+docker_image: ghcr.io/eduardofritsche/kubeshop
+docker_tag: 1.0.0
+# true = baixa a imagem de novo mesmo que a tag já exista na VM
+force_pull: false
+
+# Atualizações do sistema operacional (parâmetro update_os)
+update_os: false
+# Pacotes extras separados por vírgula (parâmetro extra_packages)
+extra_packages: ""
+
+# MongoDB
+mongo_version: "8.0"
+mongo_root_user: admin
+mongo_app_user: kubeshop
+mongo_db_name: kubeshop
+# Senhas lidas das variáveis de ambiente, que vêm dos Secrets do GitHub.
+mongo_root_password: "{{ lookup('ansible.builtin.env', 'MONGO_ROOT_PASSWORD') }}"
+mongo_app_password: "{{ lookup('ansible.builtin.env', 'MONGO_APP_PASSWORD') }}"
+mongo_data_device: /dev/disk/by-id/google-mongo-data
+mongo_data_dir: /data/mongo
+
+# Backup
+backup_dir: "{{ mongo_data_dir }}/backups"
+backup_retention_days: 7
+backup_hour: "3"
+backup_minute: "0"
