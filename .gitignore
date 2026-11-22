@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+.terraform.lock.hcl.bak
+ansible/inventory/hosts.ini
+*.retry
+.env
+pm04
+pm04.pub

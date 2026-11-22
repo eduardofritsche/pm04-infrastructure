@@ -1,0 +1,77 @@
+name: build-images
+
+# Constrói as imagens da loja (frontend e API) e publica no GitHub Container Registry.
+# Rodar com tag 1.0.0 e depois 1.0.1 (Cenário 2 troca a versão no deploy).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Versão das imagens (ex.: 1.0.0, 1.0.1)"
+        required: true
+        default: "1.0.0"
+      latest:
+        description: "Também marcar como latest"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: build ${{ matrix.component }}:${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        component: [api, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar a tag
+        run: |
+          if ! [[ "${{ inputs.tag }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Use uma versão no formato X.Y.Z (recebido: ${{ inputs.tag }})"
+            exit 1
+          fi
+
+      - name: Nome da imagem
+        id: img
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          name="ghcr.io/${owner}/kubeshop-${{ matrix.component }}"
+          tags="${name}:${{ inputs.tag }}"
+          if [ "${{ inputs.latest }}" = "true" ]; then tags="${tags},${name}:latest"; fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build e push
+        uses: docker/build-push-action@v6
+        with:
+          context: app/${{ matrix.component }}
+          push: true
+          tags: ${{ steps.img.outputs.tags }}
+          build-args: APP_VERSION=${{ inputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ inputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - name: Resumo
+        run: |
+          {
+            echo "### ${{ steps.img.outputs.name }}:${{ inputs.tag }} publicada"
+            echo ""
+            echo "Para o deploy funcionar sem login no registry, deixe o pacote **público**:"
+            echo "GitHub → seu perfil → Packages → kubeshop-${{ matrix.component }} → Package settings → Change visibility → Public."
+          } >> "$GITHUB_STEP_SUMMARY"
