@@ -4,6 +4,7 @@ Projeto final PM-04 (DevOps e Infraestrutura). A loja **KubeShop** da Zibiska Ko
 
 - Arquitetura e decisões: [docs/arquitetura.md](docs/arquitetura.md)
 - Preparar o projeto do GCP: [docs/preparar-gcp.md](docs/preparar-gcp.md)
+- O que foi feito e o que falta: [docs/HANDOFF.md](docs/HANDOFF.md)
 - Guias de estudo: [Pessoa A (Terraform e deploy)](docs/guia-A.md) · [Pessoa B (Ansible, loja e operação)](docs/guia-B.md)
 
 ## Estrutura
