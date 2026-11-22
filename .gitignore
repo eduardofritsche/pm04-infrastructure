@@ -11,3 +11,4 @@ ansible/inventory/hosts.ini
 .env
 pm04
 pm04.pub
+.terraform.lock.hcl

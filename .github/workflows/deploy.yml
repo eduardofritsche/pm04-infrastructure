@@ -1,0 +1,195 @@
+name: deploy
+
+# Cria ou atualiza o ambiente do KubeShop no GCP:
+#   1) Terraform: rede, firewall, 2 VMs, disco do banco e IP fixo
+#   2) Ansible: sistema, pacotes, Docker, MongoDB, backup e contêineres da loja
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente"
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      instance_name:
+        description: "Prefixo do nome das VMs"
+        default: kubeshop
+      app_instance_type:
+        description: "Tipo da VM da loja"
+        type: choice
+        options: [e2-micro, e2-small, e2-medium]
+        default: e2-small
+      db_instance_type:
+        description: "Tipo da VM do banco (Cenário 2: e2-small → e2-medium)"
+        type: choice
+        options: [e2-micro, e2-small, e2-medium, e2-standard-2]
+        default: e2-small
+      docker_image:
+        description: "Imagem base da loja (usa <imagem>-api e <imagem>-frontend)"
+        default: ghcr.io/eduardofritsche/kubeshop
+      docker_tag:
+        description: "Versão da loja (Cenário 2: 1.0.0 → 1.0.1)"
+        default: "1.0.0"
+      update_os:
+        description: "Aplicar atualizações do sistema operacional"
+        type: boolean
+        default: true
+      extra_packages:
+        description: "Pacotes extras (separados por vírgula)"
+        default: "curl,git"
+
+concurrency:
+  group: kubeshop-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+  TF_VAR_environment: ${{ inputs.environment }}
+  TF_VAR_instance_name: ${{ inputs.instance_name }}
+  TF_VAR_app_instance_type: ${{ inputs.app_instance_type }}
+  TF_VAR_db_instance_type: ${{ inputs.db_instance_type }}
+  TF_VAR_admin_cidr: ${{ vars.ADMIN_CIDR }}
+  TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY || secrets.SSH_PUBLIC_KEY }}
+
+jobs:
+  terraform:
+    name: Terraform (init, plan, apply)
+    runs-on: ubuntu-latest
+    outputs:
+      app_url: ${{ steps.out.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conferir parâmetros e segredos
+        env:
+          HAS_SA_KEY: ${{ secrets.GCP_SA_KEY != '' }}
+        run: |
+          faltando=()
+          [ -n "$GCP_PROJECT_ID" ]       || faltando+=("variable GCP_PROJECT_ID")
+          [ -n "$TF_STATE_BUCKET" ]      || faltando+=("variable TF_STATE_BUCKET")
+          [ "$HAS_SA_KEY" = "true" ]     || faltando+=("secret GCP_SA_KEY")
+          [ -n "$TF_VAR_ssh_public_key" ] || faltando+=("SSH_PUBLIC_KEY")
+          if [ ${#faltando[@]} -gt 0 ]; then
+            printf '::error::Falta cadastrar: %s\n' "${faltando[@]}"
+            exit 1
+          fi
+          [[ "${{ inputs.docker_tag }}" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "::error::docker_tag inválida"; exit 1; }
+          echo "Parâmetros: env=${{ inputs.environment }} nome=${{ inputs.instance_name }} app=${{ inputs.app_instance_type }} db=${{ inputs.db_instance_type }} imagem=${{ inputs.docker_image }}:${{ inputs.docker_tag }} update_os=${{ inputs.update_os }} pacotes=${{ inputs.extra_packages }}"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: scripts/tf-init.sh "${{ inputs.environment }}"
+
+      - name: terraform fmt e validate
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      - name: terraform plan
+        working-directory: terraform
+        run: |
+          terraform plan -input=false -out=tfplan
+          {
+            echo "### Terraform plan (${{ inputs.environment }})"
+            echo '```'
+            terraform show -no-color tfplan | grep -E '^(Plan:|No changes)|will be|must be replaced' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform apply
+        working-directory: terraform
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Saídas do Terraform
+        id: out
+        working-directory: terraform
+        run: |
+          terraform output -json > ../tf-outputs.json
+          echo "app_url=$(terraform output -raw app_url)" >> "$GITHUB_OUTPUT"
+          terraform output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tf-outputs
+          path: tf-outputs.json
+          retention-days: 1
+
+  ansible:
+    name: Ansible (configuração e contêineres)
+    needs: terraform
+    runs-on: ubuntu-latest
+    env:
+      MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      ANSIBLE_FORCE_COLOR: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tf-outputs
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Instalar o Ansible
+        run: |
+          pip install --quiet "ansible>=11,<13"
+          ansible --version | head -n1
+
+      - name: Chave SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          [ -n "$SSH_PRIVATE_KEY" ] || { echo "::error::Falta o secret SSH_PRIVATE_KEY"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/pm04
+          chmod 600 ~/.ssh/pm04
+
+      - name: Gerar inventário a partir do Terraform
+        run: scripts/gerar-inventario.sh tf-outputs.json "$HOME/.ssh/pm04"
+
+      - name: Liberar SSH só para o IP desta execução
+        run: scripts/abrir-ssh-pipeline.sh abrir tf-outputs.json
+
+      - name: ansible-playbook
+        working-directory: ansible
+        run: |
+          cat > /tmp/extra-vars.json <<JSON
+          {
+            "environment_name": "${{ inputs.environment }}",
+            "docker_image": "${{ inputs.docker_image }}",
+            "docker_tag": "${{ inputs.docker_tag }}",
+            "update_os": ${{ inputs.update_os }},
+            "extra_packages": "${{ inputs.extra_packages }}"
+          }
+          JSON
+          cat /tmp/extra-vars.json
+          ansible-playbook playbook.yml -e @/tmp/extra-vars.json
+
+      - name: Fechar o SSH da pipeline
+        if: always()
+        run: scripts/abrir-ssh-pipeline.sh fechar tf-outputs.json
+
+      - name: Resumo
+        run: |
+          echo "### KubeShop ${{ inputs.docker_tag }} no ar: ${{ needs.terraform.outputs.app_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Loja: ${{ needs.terraform.outputs.app_url }}"

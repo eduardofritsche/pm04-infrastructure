@@ -1,0 +1,16 @@
+- name: Instalar os scripts de backup e restauração
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0750"
+  loop:
+    - kubeshop-backup.sh
+    - kubeshop-restore.sh
+
+- name: Agendar o backup diário (cron)
+  ansible.builtin.cron:
+    name: kubeshop-backup
+    minute: "{{ backup_minute }}"
+    hour: "{{ backup_hour }}"
+    job: "/usr/local/bin/kubeshop-backup.sh >> /var/log/kubeshop-backup.log 2>&1"
+    user: root

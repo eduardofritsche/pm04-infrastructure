@@ -1,0 +1,88 @@
+- name: Formatar o disco de dados do banco (só se ainda não tiver sistema de arquivos)
+  community.general.filesystem:
+    dev: "{{ mongo_data_device }}"
+    fstype: ext4
+
+- name: Montar o disco de dados em {{ mongo_data_dir }}
+  ansible.posix.mount:
+    path: "{{ mongo_data_dir }}"
+    src: "{{ mongo_data_device }}"
+    fstype: ext4
+    opts: defaults,nofail,discard
+    state: mounted
+
+- name: Criar as pastas de dados, backups e scripts de inicialização
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - "{{ mongo_data_dir }}/db"
+    - "{{ backup_dir }}"
+
+- name: Criar a pasta de scripts do banco
+  ansible.builtin.file:
+    path: /opt/kubeshop/mongo-init
+    state: directory
+    mode: "0755"
+
+- name: Copiar o script que garante o usuário da loja
+  ansible.builtin.copy:
+    src: mongo-init.js
+    dest: /opt/kubeshop/mongo-init/mongo-init.js
+    mode: "0644"
+
+- name: Conferir se as senhas do MongoDB chegaram
+  ansible.builtin.assert:
+    that:
+      - mongo_root_password | length > 0
+      - mongo_app_password | length > 0
+    fail_msg: "MONGO_ROOT_PASSWORD e MONGO_APP_PASSWORD precisam estar nos Secrets do GitHub."
+    quiet: true
+  no_log: true
+
+- name: Subir o contêiner do MongoDB {{ mongo_version }}
+  community.docker.docker_container:
+    name: mongo
+    image: "mongo:{{ mongo_version }}"
+    pull: missing
+    restart_policy: unless-stopped
+    state: started
+    ports:
+      - "27017:27017"
+    volumes:
+      - "{{ mongo_data_dir }}/db:/data/db"
+      - "/opt/kubeshop/mongo-init:/opt/kubeshop-init:ro"
+    env:
+      MONGO_INITDB_ROOT_USERNAME: "{{ mongo_root_user }}"
+      MONGO_INITDB_ROOT_PASSWORD: "{{ mongo_root_password }}"
+      MONGO_APP_USER: "{{ mongo_app_user }}"
+      MONGO_APP_PASSWORD: "{{ mongo_app_password }}"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+  no_log: true
+
+- name: Esperar o MongoDB responder (com usuário e senha)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo sh -c 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME"
+      -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin
+      --eval "db.adminCommand({ping: 1}).ok"'
+  register: mongo_ping
+  until: mongo_ping.rc == 0 and '1' in mongo_ping.stdout
+  retries: 20
+  delay: 5
+  changed_when: false
+
+- name: Garantir o usuário da loja (kubeshop) com a senha do Secret
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo sh -c 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME"
+      -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin
+      --file /opt/kubeshop-init/mongo-init.js'
+  register: app_user
+  changed_when: "'USUARIO_CRIADO' in app_user.stdout"

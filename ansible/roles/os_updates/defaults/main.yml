@@ -1,0 +1,8 @@
+base_packages:
+  - ca-certificates
+  - cron
+  - curl
+  - gnupg
+  - jq
+  - netcat-openbsd
+  - python3-docker

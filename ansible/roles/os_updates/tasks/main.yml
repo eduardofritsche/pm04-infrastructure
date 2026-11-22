@@ -1,0 +1,46 @@
+- name: Atualizar a lista de pacotes (apt update)
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: 600
+    cache_valid_time: 3600
+  changed_when: false
+
+- name: Aplicar atualizações do sistema operacional (update_os=true)
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: true
+    lock_timeout: 600
+  when: update_os | bool
+  register: os_upgrade
+
+- name: Verificar se o sistema pede reinicialização
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: reboot_required
+  when: update_os | bool
+
+- name: Reiniciar a VM para concluir as atualizações
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+    msg: "Reinício pelo Ansible após atualização do sistema"
+  when:
+    - update_os | bool
+    - reboot_required.stat.exists | default(false)
+
+- name: Montar a lista de pacotes (base + extra_packages)
+  ansible.builtin.set_fact:
+    packages_to_install: >-
+      {{ base_packages
+         + (extra_packages | string).split(',') | map('trim') | reject('equalto', '') | list }}
+
+- name: Instalar pacotes necessários e extras
+  ansible.builtin.apt:
+    name: "{{ packages_to_install }}"
+    state: present
+    lock_timeout: 600
+
+- name: Resumo do sistema
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ ansible_distribution }} {{ ansible_distribution_version }},
+      update_os={{ update_os }}, pacotes={{ packages_to_install | join(',') }}

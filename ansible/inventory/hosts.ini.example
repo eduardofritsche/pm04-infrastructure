@@ -1,0 +1,16 @@
+# Gerado automaticamente pela pipeline (scripts/gerar-inventario.sh) a partir
+# das saídas do Terraform. Exemplo do formato:
+[app]
+kubeshop-dev-app ansible_host=34.95.10.20
+
+[db]
+kubeshop-dev-db ansible_host=10.10.0.10
+
+[db:vars]
+# O banco não tem SSH aberto para a internet: o Ansible entra pela VM da loja.
+ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/pm04 ubuntu@34.95.10.20"'
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=~/.ssh/pm04
+db_internal_ip=10.10.0.10

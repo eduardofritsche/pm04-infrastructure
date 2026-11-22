@@ -1,0 +1,48 @@
+- name: Criar a rede Docker da loja
+  community.docker.docker_network:
+    name: kubeshop
+
+- name: Subir a API na versão pedida (docker_tag) - {{ docker_tag }}
+  community.docker.docker_container:
+    name: api
+    image: "{{ docker_image }}-api:{{ docker_tag }}"
+    pull: "{{ 'always' if force_pull | bool else 'missing' }}"
+    restart_policy: unless-stopped
+    state: started
+    networks:
+      - name: kubeshop
+    env:
+      MONGO_HOST: "{{ db_internal_ip }}:27017"
+      MONGO_DB: "{{ mongo_db_name }}"
+      MONGO_USER: "{{ mongo_app_user }}"
+      MONGO_PASSWORD: "{{ mongo_app_password }}"
+  no_log: true
+  register: api_container
+
+- name: Subir o frontend na versão pedida (docker_tag) - {{ docker_tag }}
+  community.docker.docker_container:
+    name: frontend
+    image: "{{ docker_image }}-frontend:{{ docker_tag }}"
+    pull: "{{ 'always' if force_pull | bool else 'missing' }}"
+    restart_policy: unless-stopped
+    state: started
+    networks:
+      - name: kubeshop
+    ports:
+      - "80:80"
+
+- name: Verificar a loja de ponta a ponta (Nginx → API → MongoDB)
+  ansible.builtin.uri:
+    url: http://127.0.0.1/api/health
+    return_content: true
+  register: health
+  until: health.status == 200 and health.json.database == 'ok'
+  retries: 24
+  delay: 5
+
+- name: Conferir se a versão no ar é a pedida
+  ansible.builtin.assert:
+    that:
+      - health.json.version == (docker_tag | string)
+    fail_msg: "Versão no ar {{ health.json.version }} ≠ docker_tag {{ docker_tag }}"
+    success_msg: "KubeShop {{ health.json.version }} no ar: {{ health.json.products }} produtos, {{ health.json.orders }} pedidos"

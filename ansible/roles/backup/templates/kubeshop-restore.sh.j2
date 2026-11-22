@@ -1,0 +1,18 @@
+#!/bin/bash
+# Restaura o banco da loja (gerado pelo Ansible).
+# Uso: kubeshop-restore.sh [arquivo]   (sem arquivo = backup mais recente)
+set -euo pipefail
+DIR="{{ backup_dir }}"
+FILE="${1:-}"
+if [ -z "$FILE" ]; then
+  FILE="$(ls -1t "$DIR"/*.archive.gz 2>/dev/null | head -n1 || true)"
+elif [ "${FILE#/}" = "$FILE" ]; then
+  FILE="$DIR/$FILE"
+fi
+if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+  echo "Nenhum backup encontrado em $DIR" >&2
+  exit 1
+fi
+echo "Restaurando $FILE ..."
+docker exec -i mongo sh -c 'mongorestore --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --nsInclude "{{ mongo_db_name }}.*" --drop --archive --gzip' < "$FILE"
+echo "Restauração concluída a partir de $(basename "$FILE")"

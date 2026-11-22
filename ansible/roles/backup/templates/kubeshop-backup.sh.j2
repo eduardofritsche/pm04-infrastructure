@@ -1,0 +1,10 @@
+#!/bin/bash
+# Backup do banco da loja (gerado pelo Ansible). Uso: kubeshop-backup.sh
+set -euo pipefail
+DIR="{{ backup_dir }}"
+FILE="$DIR/{{ mongo_db_name }}-$(date +%Y%m%d-%H%M%S).archive.gz"
+mkdir -p "$DIR"
+docker exec mongo sh -c 'mongodump --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --db {{ mongo_db_name }} --archive --gzip' > "$FILE.tmp"
+mv "$FILE.tmp" "$FILE"
+find "$DIR" -name '*.archive.gz' -mtime +{{ backup_retention_days }} -delete
+echo "Backup criado: $FILE ($(du -h "$FILE" | cut -f1))"

@@ -1,0 +1,101 @@
+# Rotinas de operação chamadas pela pipeline operations.yml.
+# Uso: ansible-playbook operations.yml -e ops_action=backup|restore|health|logs [-e backup_file=...]
+- name: Validar a ação pedida
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Conferir ops_action
+      ansible.builtin.assert:
+        that: ops_action | default('') in ['backup', 'restore', 'health', 'logs']
+        fail_msg: "ops_action deve ser backup, restore, health ou logs"
+
+- name: Backup e restauração do banco
+  hosts: db
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Gerar backup agora
+      ansible.builtin.command: /usr/local/bin/kubeshop-backup.sh
+      register: backup_out
+      changed_when: true
+      when: ops_action == 'backup'
+
+    - name: Restaurar backup
+      ansible.builtin.command:
+        argv: "{{ ['/usr/local/bin/kubeshop-restore.sh'] + ([backup_file] if backup_file | default('') | length > 0 else []) }}"
+      register: restore_out
+      changed_when: true
+      when: ops_action == 'restore'
+
+    - name: Resultado
+      ansible.builtin.debug:
+        msg: "{{ (backup_out.stdout_lines | default([])) + (restore_out.stdout_lines | default([])) }}"
+      when: ops_action in ['backup', 'restore']
+
+    - name: Backups disponíveis
+      ansible.builtin.shell: ls -lh {{ backup_dir }}/*.archive.gz 2>/dev/null || echo "nenhum backup"
+      register: backups_list
+      changed_when: false
+      when: ops_action in ['backup', 'restore', 'health']
+
+    - name: Lista de backups
+      ansible.builtin.debug:
+        var: backups_list.stdout_lines
+      when: ops_action in ['backup', 'restore', 'health']
+
+- name: Saúde da loja
+  hosts: app
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Consultar /api/health
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/health
+        return_content: true
+      register: health
+      failed_when: false
+      when: ops_action in ['health', 'restore']
+
+    - name: Resultado do health
+      ansible.builtin.debug:
+        var: health.json | default(health.msg | default('sem resposta'))
+      when: ops_action in ['health', 'restore']
+
+- name: Diagnóstico das duas VMs
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Contêineres, disco, memória e carga
+      ansible.builtin.shell: |
+        echo "== Contêineres =="
+        docker ps --format 'table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
+        echo; echo "== Disco =="; df -h / {{ mongo_data_dir if inventory_hostname in groups['db'] else '' }}
+        echo; echo "== Memória =="; free -m
+        echo; echo "== Carga =="; uptime
+      register: diag
+      changed_when: false
+      when: ops_action == 'health'
+
+    - name: Diagnóstico
+      ansible.builtin.debug:
+        var: diag.stdout_lines
+      when: ops_action == 'health'
+
+    - name: Últimas linhas de log dos contêineres
+      ansible.builtin.shell: |
+        for c in $(docker ps -a --format '{{ '{{' }}.Names{{ '}}' }}'); do
+          echo "===== $c ====="
+          docker logs --tail 80 --timestamps "$c" 2>&1
+        done
+        if [ -f /var/log/kubeshop-backup.log ]; then
+          echo "===== backup (cron) ====="; tail -n 20 /var/log/kubeshop-backup.log
+        fi
+      register: logs
+      changed_when: false
+      when: ops_action == 'logs'
+
+    - name: Logs
+      ansible.builtin.debug:
+        var: logs.stdout_lines
+      when: ops_action == 'logs'

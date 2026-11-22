@@ -1,0 +1,36 @@
+# Configura as 2 VMs do zero e mantém tudo atualizado.
+# Rodado pela pipeline deploy.yml logo depois do Terraform.
+- name: Preparar o sistema operacional das duas VMs
+  hosts: all
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Esperar a VM aceitar SSH (pode ter acabado de ser criada)
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+    - name: Coletar informações da VM
+      ansible.builtin.setup:
+    - name: Esperar o cloud-init terminar (primeiro boot)
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+      failed_when: false
+  roles:
+    - os_updates
+    - docker
+
+- name: VM do banco - MongoDB e backup
+  hosts: db
+  become: true
+  roles:
+    - mongodb
+    - backup
+
+- name: VM da aplicação - loja (frontend) e API
+  hosts: app
+  become: true
+  roles:
+    - app
+  post_tasks:
+    - name: Endereço da loja
+      ansible.builtin.debug:
+        msg: "Loja no ar em http://{{ ansible_host }} (versão {{ docker_tag }})"

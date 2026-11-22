@@ -1,0 +1,115 @@
+name: operations
+
+# Rotinas de operação e manutenção do ambiente (manual de operação: README.md).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Rotina"
+        type: choice
+        options: [health, logs, backup, restore, destroy]
+        default: health
+      environment:
+        description: "Ambiente"
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      instance_name:
+        description: "Prefixo do nome das VMs (o mesmo usado no deploy)"
+        default: kubeshop
+      backup_file:
+        description: "restore: arquivo de backup (vazio = o mais recente)"
+        required: false
+        default: ""
+
+concurrency:
+  group: kubeshop-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+  TF_VAR_environment: ${{ inputs.environment }}
+  TF_VAR_instance_name: ${{ inputs.instance_name }}
+  TF_VAR_admin_cidr: ${{ vars.ADMIN_CIDR }}
+  TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY || secrets.SSH_PUBLIC_KEY }}
+
+jobs:
+  operations:
+    name: ${{ inputs.action }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    env:
+      MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      ANSIBLE_FORCE_COLOR: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: scripts/tf-init.sh "${{ inputs.environment }}"
+
+      # ---------- destroy ----------
+      - name: terraform destroy
+        if: inputs.action == 'destroy'
+        working-directory: terraform
+        run: |
+          terraform plan -destroy -input=false -no-color | grep -E '^Plan:|No changes' || true
+          terraform destroy -input=false -auto-approve
+          echo "### Ambiente ${{ inputs.environment }} destruído" >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- backup / restore / health / logs ----------
+      - name: Ler o ambiente no state do Terraform
+        if: inputs.action != 'destroy'
+        working-directory: terraform
+        run: |
+          terraform output -json > ../tf-outputs.json
+          if [ "$(jq 'length' ../tf-outputs.json)" = "0" ]; then
+            echo "::error::Ambiente ${{ inputs.environment }} não existe. Rode o deploy antes."
+            exit 1
+          fi
+          terraform output
+
+      - name: Preparar Ansible e chave SSH
+        if: inputs.action != 'destroy'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          pip install --quiet "ansible>=11,<13"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/pm04
+          chmod 600 ~/.ssh/pm04
+          scripts/gerar-inventario.sh tf-outputs.json "$HOME/.ssh/pm04"
+
+      - name: Liberar SSH só para o IP desta execução
+        if: inputs.action != 'destroy'
+        run: scripts/abrir-ssh-pipeline.sh abrir tf-outputs.json
+
+      - name: Rodar a rotina ${{ inputs.action }}
+        if: inputs.action != 'destroy'
+        working-directory: ansible
+        env:
+          BACKUP_FILE: ${{ inputs.backup_file }}
+        run: |
+          ansible-playbook operations.yml \
+            -e ops_action="${{ inputs.action }}" \
+            -e backup_file="$BACKUP_FILE"
+
+      - name: Fechar o SSH da pipeline
+        if: always() && inputs.action != 'destroy'
+        run: scripts/abrir-ssh-pipeline.sh fechar tf-outputs.json
