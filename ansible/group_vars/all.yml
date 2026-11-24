@@ -13,8 +13,9 @@ update_os: false
 # Pacotes extras separados por vírgula (parâmetro extra_packages)
 extra_packages: ""
 
-# MongoDB
-mongo_version: "8.0"
+# MongoDB: mesma versão validada pelo cliente no compose.yaml (mongo:8.0.17).
+# Banco, usuário e authSource "kubeshop" iguais aos do compose e do init.js dele.
+mongo_version: "8.0.17"
 mongo_root_user: admin
 mongo_app_user: kubeshop
 mongo_db_name: kubeshop

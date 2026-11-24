@@ -7,7 +7,7 @@ on:
       action:
         description: "Rotina"
         type: choice
-        options: [health, logs, backup, restore, destroy]
+        options: [health, logs, smoke, backup, restore, destroy]
         default: health
       environment:
         description: "Ambiente"
