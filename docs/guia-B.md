@@ -24,29 +24,32 @@ Você apresenta: Ansible, a loja funcionando, Cenários do lado do Ansible e a v
 |---|---|---|
 | `os_updates` | `apt update`; se `update_os=true`, aplica as atualizações e reinicia se o sistema pedir; instala pacotes base e `extra_packages` | `update_os`, `extra_packages` |
 | `docker` | Instala o Docker se não houver, configura rotação de logs, garante o serviço rodando | – |
-| `mongodb` | Formata (só na primeira vez) e monta o disco de dados em `/data/mongo`; sobe o contêiner `mongo:8.0` com usuário e senha; garante o usuário `kubeshop` com acesso só ao banco da loja | senhas dos Secrets |
+| `mongodb` | Formata (só na primeira vez) e monta o disco de dados em `/data/mongo`; sobe o contêiner `mongo:8.0.17` (a versão do cliente) com usuário e senha; garante o usuário `kubeshop` com acesso só ao banco da loja | senhas dos Secrets |
 | `backup` | Instala `kubeshop-backup.sh` e `kubeshop-restore.sh` e agenda o backup diário às 03:00 (guarda 7 dias) | – |
-| `app` | Cria a rede Docker, sobe a API e o frontend na versão `docker_tag`, e testa a loja de ponta a ponta (`/api/health` precisa responder com o banco ok e a versão certa) | `docker_image`, `docker_tag` |
+| `app` | Cria a rede Docker, grava a senha do banco num arquivo para a API, sobe a API, espera ela ficar `healthy`, sobe o frontend e testa a loja de ponta a ponta (`/api/health/ready` com o banco ok e `/api/info` com a versão certa) | `docker_image`, `docker_tag` |
 
 ### Como a troca de versão (Cenário 2) acontece
 
-Com `docker_tag=1.0.1`, a imagem pedida é outra, então o módulo `docker_container` baixa a nova imagem e recria só os contêineres da loja. O banco não é tocado, por isso o pedido feito na 1.0.0 continua em "Meus pedidos" (e mostra "feito na versão 1.0.0"). A versão nova aparece no topo da loja.
+Com `docker_tag=1.0.1`, a imagem pedida é outra (e `APP_VERSION` também), então o módulo `docker_container` baixa a nova imagem e recria só os contêineres da loja. O banco não é tocado, por isso o pedido feito na 1.0.0 continua em "Meus pedidos". A versão nova aparece em `http://<ip>/api/info` e no resumo do Ansible.
 
 ### Por que `changed=0` no Cenário 3
 
 Cada tarefa compara o estado atual com o pedido: pacote já instalado, contêiner já com a imagem e as variáveis certas, arquivo igual. Comandos de verificação têm `changed_when: false`.
 
-## A loja (`app/`)
+## A loja (código do cliente, [kube-shop-v2](https://github.com/LaercioMLB/kube-shop-v2))
 
-- **frontend**: React servido pelo Nginx. O Nginx manda `/api/...` para o contêiner `api`.
-- **api**: Node.js/Express. `GET /api/products`, `POST /api/orders`, `GET /api/orders?email=...`, `GET /api/health`.
-- **build-images.yml** constrói as duas imagens e publica no GitHub Container Registry com a tag escolhida.
+- **Não escrevemos a loja.** O escopo diz que a Zibiska Korp fornece o código; nós só adaptamos a implantação para duas VMs. Detalhes em [integracao-app.md](integracao-app.md).
+- **frontend**: React servido pelo Nginx na porta 8080 (publicada na 80 da VM). O Nginx manda `/api/...` para o contêiner `api`.
+- **api**: Node.js 24/Express na 3000. `GET /api/products`, `POST /api/orders`, `GET /api/orders`, `GET /api/info` (versão), `GET /api/health/live|startup|ready`.
+- **build-images.yml** baixa o código no commit fixo, roda os testes dele e constrói as duas imagens com os Dockerfiles originais.
+- **O que adaptamos do `compose.yaml`**: `MONGO_HOST` vira o IP privado do banco; a senha vai num arquivo (`MONGO_PASSWORD_FILE`); o `depends_on` vira a ordem do playbook com espera pelo healthcheck.
 
 ## `operations.yml` (rotinas)
 
 | action | Para mostrar |
 |---|---|
 | `health` | Loja → API → banco ok, versão, contêineres, disco, memória e lista de backups |
+| `smoke` | Teste funcional do cliente (`smoke.mjs`): `result: PASS` |
 | `logs` | Diagnóstico pelos logs dos contêineres |
 | `backup` | Backup gerado agora, com nome e tamanho |
 | `restore` | Restaura o último backup e mostra o health depois |

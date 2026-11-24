@@ -1,13 +1,13 @@
 # Rotinas de operação chamadas pela pipeline operations.yml.
-# Uso: ansible-playbook operations.yml -e ops_action=backup|restore|health|logs [-e backup_file=...]
+# Uso: ansible-playbook operations.yml -e ops_action=backup|restore|health|logs|smoke [-e backup_file=...]
 - name: Validar a ação pedida
   hosts: localhost
   gather_facts: false
   tasks:
     - name: Conferir ops_action
       ansible.builtin.assert:
-        that: ops_action | default('') in ['backup', 'restore', 'health', 'logs']
-        fail_msg: "ops_action deve ser backup, restore, health ou logs"
+        that: ops_action | default('') in ['backup', 'restore', 'health', 'logs', 'smoke']
+        fail_msg: "ops_action deve ser backup, restore, health, logs ou smoke"
 
 - name: Backup e restauração do banco
   hosts: db
@@ -48,18 +48,33 @@
   become: true
   gather_facts: false
   tasks:
-    - name: Consultar /api/health
+    - name: Consultar a saúde e a versão da loja (Nginx → API → MongoDB)
       ansible.builtin.uri:
-        url: http://127.0.0.1/api/health
+        url: "http://127.0.0.1/api/{{ item }}"
         return_content: true
+        status_code: [200, 503]
+      loop: [health/ready, info]
       register: health
       failed_when: false
       when: ops_action in ['health', 'restore']
 
     - name: Resultado do health
       ansible.builtin.debug:
-        var: health.json | default(health.msg | default('sem resposta'))
+        msg: "{{ health.results | map(attribute='json', default='sem resposta') | list }}"
       when: ops_action in ['health', 'restore']
+
+    # Teste funcional que vem com a aplicação (scripts/smoke.mjs do cliente):
+    # página inicial, saúde, catálogo e criação/consulta de um pedido fictício.
+    - name: Rodar o teste funcional da aplicação (smoke.mjs)
+      ansible.builtin.command: docker exec api node /app/scripts/smoke.mjs http://frontend:8080
+      register: smoke
+      changed_when: true
+      when: ops_action == 'smoke'
+
+    - name: Resultado do smoke
+      ansible.builtin.debug:
+        var: smoke.stdout_lines
+      when: ops_action == 'smoke'
 
 - name: Diagnóstico das duas VMs
   hosts: all

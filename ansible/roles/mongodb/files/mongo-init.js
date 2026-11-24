@@ -1,6 +1,8 @@
 // Garante o usuário da loja no MongoDB, com acesso só ao banco "kubeshop".
-// Rodado pelo Ansible a cada deploy (idempotente): cria o usuário se não existir
-// e mantém a senha igual à do Secret MONGO_APP_PASSWORD.
+// Faz o mesmo que o docker/mongodb/init.js da aplicação (usuário kubeshop com
+// readWrite no banco kubeshop), mas roda a cada deploy (idempotente): cria o
+// usuário se não existir e mantém a senha igual à do Secret MONGO_APP_PASSWORD.
+// O init.js original só roda com o banco vazio, por isso não é usado aqui.
 const user = process.env.MONGO_APP_USER || 'kubeshop';
 const pwd = process.env.MONGO_APP_PASSWORD;
 if (!pwd) throw new Error('MONGO_APP_PASSWORD vazio');

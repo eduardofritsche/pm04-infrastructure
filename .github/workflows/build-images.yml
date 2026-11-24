@@ -1,6 +1,10 @@
 name: build-images
 
-# Constrói as imagens da loja (frontend e API) e publica no GitHub Container Registry.
+# CI da aplicação: testa e empacota o código do cliente (Zibiska Korp) e publica
+# as imagens no GitHub Container Registry. O código NÃO fica neste repositório:
+# é baixado do repositório da aplicação no commit informado e construído com os
+# Dockerfiles originais, sem alterações (docs/integracao-app.md).
+#
 # Rodar com tag 1.0.0 e depois 1.0.1 (Cenário 2 troca a versão no deploy).
 on:
   workflow_dispatch:
@@ -9,6 +13,12 @@ on:
         description: "Versão das imagens (ex.: 1.0.0, 1.0.1)"
         required: true
         default: "1.0.0"
+      app_repository:
+        description: "Repositório do código da aplicação (dono/nome)"
+        default: LaercioMLB/kube-shop-v2
+      app_ref:
+        description: "Commit, tag ou branch do código da aplicação"
+        default: ee30950799494e789d586369fb194e815b238691
       latest:
         description: "Também marcar como latest"
         type: boolean
@@ -19,16 +29,10 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    name: build ${{ matrix.component }}:${{ inputs.tag }}
+  test:
+    name: testes da aplicação (npm test)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        component: [api, frontend]
     steps:
-      - uses: actions/checkout@v4
-
       - name: Validar a tag
         run: |
           if ! [[ "${{ inputs.tag }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -36,8 +40,46 @@ jobs:
             exit 1
           fi
 
-      - name: Nome da imagem
+      - name: Baixar o código da aplicação
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.app_repository }}
+          ref: ${{ inputs.app_ref }}
+          path: kube-shop
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+
+      - name: npm ci e npm test (API e interface)
+        working-directory: kube-shop
+        run: |
+          npm ci --ignore-scripts
+          npm test
+
+  build:
+    name: build ${{ matrix.component }}:${{ inputs.tag }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - component: api
+            dockerfile: apps/backend/Dockerfile
+          - component: frontend
+            dockerfile: apps/frontend/Dockerfile
+    steps:
+      - name: Baixar o código da aplicação
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.app_repository }}
+          ref: ${{ inputs.app_ref }}
+          path: kube-shop
+
+      - name: Nome da imagem e commit
         id: img
+        working-directory: kube-shop
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           name="ghcr.io/${owner}/kubeshop-${{ matrix.component }}"
@@ -45,6 +87,7 @@ jobs:
           if [ "${{ inputs.latest }}" = "true" ]; then tags="${tags},${name}:latest"; fi
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -54,16 +97,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Contexto = raiz do repositório da aplicação: os Dockerfiles copiam o
+      # package.json e o package-lock.json da raiz (npm workspaces).
       - name: Build e push
         uses: docker/build-push-action@v6
         with:
-          context: app/${{ matrix.component }}
+          context: kube-shop
+          file: kube-shop/${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.img.outputs.tags }}
-          build-args: APP_VERSION=${{ inputs.tag }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ inputs.tag }}
+            org.opencontainers.image.revision=${{ steps.img.outputs.revision }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ inputs.app_repository }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
@@ -71,6 +118,8 @@ jobs:
         run: |
           {
             echo "### ${{ steps.img.outputs.name }}:${{ inputs.tag }} publicada"
+            echo ""
+            echo "Código: ${{ inputs.app_repository }} @ \`${{ steps.img.outputs.revision }}\` (${{ matrix.dockerfile }}, sem alterações)"
             echo ""
             echo "Para o deploy funcionar sem login no registry, deixe o pacote **público**:"
             echo "GitHub → seu perfil → Packages → kubeshop-${{ matrix.component }} → Package settings → Change visibility → Public."

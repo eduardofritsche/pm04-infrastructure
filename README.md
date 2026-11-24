@@ -1,8 +1,9 @@
 # pm04-infrastructure · KubeShop no Google Cloud
 
-Projeto final PM-04 (DevOps e Infraestrutura). A loja **KubeShop** da Zibiska Korp roda em **2 máquinas virtuais no GCP**: o **Terraform** cria a infraestrutura, o **Ansible** configura as máquinas e sobe os contêineres, e o **GitHub Actions** dispara os dois com parâmetros. Este README também é o **manual de operação** do ambiente.
+Projeto final PM-04 (DevOps e Infraestrutura). A loja **KubeShop** da Zibiska Korp roda em **2 máquinas virtuais no GCP**: o **Terraform** cria a infraestrutura, o **Ansible** configura as máquinas e sobe os contêineres, e o **GitHub Actions** dispara os dois com parâmetros. A aplicação é a do cliente ([LaercioMLB/kube-shop-v2](https://github.com/LaercioMLB/kube-shop-v2)), construída sem alterações. Este README também é o **manual de operação** do ambiente.
 
 - Arquitetura e decisões: [docs/arquitetura.md](docs/arquitetura.md)
+- Integração com a aplicação e o CI/CD do cliente: [docs/integracao-app.md](docs/integracao-app.md)
 - Preparar o projeto do GCP: [docs/preparar-gcp.md](docs/preparar-gcp.md)
 - Guias de estudo: [Pessoa A (Terraform e deploy)](docs/guia-A.md) · [Pessoa B (Ansible, loja e operação)](docs/guia-B.md)
 
@@ -10,12 +11,11 @@ Projeto final PM-04 (DevOps e Infraestrutura). A loja **KubeShop** da Zibiska Ko
 
 ```
 .github/workflows/  build-images.yml  deploy.yml  operations.yml
-app/                frontend/ (React + Nginx)  api/ (Node.js/Express)
 terraform/          main.tf network.tf vms.tf variables.tf outputs.tf backend.tf
 ansible/            playbook.yml operations.yml ansible.cfg inventory/ group_vars/
                     roles/ os_updates docker mongodb app backup
 scripts/            tf-init.sh gerar-inventario.sh abrir-ssh-pipeline.sh
-docs/               arquitetura.md preparar-gcp.md guia-A.md guia-B.md
+docs/               arquitetura.md integracao-app.md preparar-gcp.md guia-A.md guia-B.md custos.md
 evidencias/         prints da apresentação (01-...png a 12-...png)
 ```
 
@@ -34,9 +34,9 @@ evidencias/         prints da apresentação (01-...png a 12-...png)
 
 ## Pipelines
 
-### 1. `build-images` — imagens da loja
+### 1. `build-images` — imagens da loja (CI da aplicação)
 
-Actions → **build-images** → Run workflow → `tag` = `1.0.0` (depois `1.0.1`). Publica `ghcr.io/<dono>/kubeshop-api:<tag>` e `ghcr.io/<dono>/kubeshop-frontend:<tag>`. Os pacotes precisam estar **públicos** para as VMs baixarem sem login.
+Actions → **build-images** → Run workflow → `tag` = `1.0.0` (depois `1.0.1`). Baixa o código do cliente no commit `app_ref`, roda os testes dele (`npm test`), constrói com os Dockerfiles originais e publica `ghcr.io/<dono>/kubeshop-api:<tag>` e `ghcr.io/<dono>/kubeshop-frontend:<tag>`. Os pacotes precisam estar **públicos** para as VMs baixarem sem login.
 
 ### 2. `deploy` — criar ou atualizar o ambiente
 
@@ -59,7 +59,8 @@ Job **Terraform**: `init` (state no GCS) → `fmt`/`validate` → `plan` → `ap
 
 | `action` | O que faz |
 |---|---|
-| `health` | Consulta `/api/health` (loja → API → banco), lista contêineres, disco, memória, carga e backups |
+| `health` | Consulta `/api/health/ready` (loja → API → banco) e `/api/info` (versão), lista contêineres, disco, memória, carga e backups |
+| `smoke` | Roda o teste funcional da aplicação (`scripts/smoke.mjs`): página, proxy, saúde, catálogo e um pedido fictício |
 | `logs` | Últimas 80 linhas de log de cada contêiner e do backup agendado |
 | `backup` | Gera um backup do banco agora (`mongodump`) em `/data/mongo/backups` |
 | `restore` | Restaura o backup mais recente (ou o arquivo em `backup_file`) |
@@ -75,7 +76,7 @@ Job **Terraform**: `init` (state no GCS) → `fmt`/`validate` → `plan` → `ap
 
 ## Manual de operação
 
-- **A loja está no ar?** `operations` → `health`. Deve mostrar `status: ok`, `database: ok` e a versão.
+- **A loja está no ar?** `operations` → `health`. Deve mostrar `ready: true`, `database: true` e a versão. Para testar a compra de ponta a ponta: `operations` → `smoke` (`result: PASS`).
 - **Algo falhou?** `operations` → `logs`. Erros da API aparecem no contêiner `api`; do banco, no `mongo`.
 - **Backup:** automático todo dia às 03:00 (horário da VM, UTC), guardado 7 dias no disco de dados. Manual: `operations` → `backup`.
 - **Restaurar:** `operations` → `restore` (opcional: `backup_file` com o nome mostrado no `health`/`backup`).
@@ -86,10 +87,4 @@ Job **Terraform**: `init` (state no GCS) → `fmt`/`validate` → `plan` → `ap
 
 ## Rodar a loja no seu computador
 
-```bash
-docker network create ks
-docker run -d --name mongo --network ks mongo:8.0
-docker run -d --name api --network ks -e MONGO_HOST=mongo:27017 ghcr.io/eduardofritsche/kubeshop-api:1.0.0
-docker run -d --name frontend --network ks -p 8080:80 ghcr.io/eduardofritsche/kubeshop-frontend:1.0.0
-# abra http://localhost:8080
-```
+Use o `compose.yaml` do próprio repositório da aplicação (instruções no [README dele](https://github.com/LaercioMLB/kube-shop-v2#como-rodar-localmente)): `sh scripts/setup.sh` e `docker compose up -d --build --wait`, loja em http://localhost:8080.
